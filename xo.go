@@ -23,8 +23,13 @@ import (
 )
 
 func main() {
-	var err error
+	if err := realmain(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
 
+func realmain() error {
 	// get defaults
 	internal.Args = internal.NewDefaultArgs()
 	args := internal.Args
@@ -33,53 +38,43 @@ func main() {
 	arg.MustParse(args)
 
 	// process args
-	err = processArgs(args)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	if err := processArgs(args); err != nil {
+		return err
 	}
 
 	// open database
-	err = openDB(args)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	if err := openDB(args); err != nil {
+		return err
 	}
 	defer args.DB.Close()
 
 	// load schema name
 	if args.Schema == "" {
-		args.Schema, err = args.Loader.SchemaName(args)
+		schema, err := args.Loader.SchemaName(args)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
+		args.Schema = schema
 	}
 
 	// load defs into type map
 	if args.QueryMode {
-		err = args.Loader.ParseQuery(args)
+		if err := args.Loader.ParseQuery(args); err != nil {
+			return err
+		}
 	} else {
-		err = args.Loader.LoadSchema(args)
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		if err := args.Loader.LoadSchema(args); err != nil {
+			return err
+		}
 	}
 
 	// add xo
-	err = args.ExecuteTemplate(internal.XOTemplate, "xo_db", "", args)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	if err := args.ExecuteTemplate(internal.XOTemplate, "xo_db", "", args); err != nil {
+		return err
 	}
 
 	// output
-	err = writeTypes(args)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
+	return writeTypes(args)
 }
 
 // processArgs processs cli args.
@@ -281,8 +276,6 @@ func getFile(args *internal.ArgType, t *internal.TBuf) (*os.File, error) {
 
 // writeTypes writes the generated definitions.
 func writeTypes(args *internal.ArgType) error {
-	var err error
-
 	out := internal.TBufSlice(args.Generated)
 
 	// sort segments
@@ -290,51 +283,50 @@ func writeTypes(args *internal.ArgType) error {
 
 	// loop, writing in order
 	for _, t := range out {
-		var f *os.File
-
-		// skip when in append and type is XO
-		if args.Append && t.TemplateType == internal.XOTemplate {
-			continue
-		}
-
-		// check if generated template is only whitespace/empty
-		bufStr := strings.TrimSpace(t.Buf.String())
-		if len(bufStr) == 0 {
-			continue
-		}
-
-		// get file and filename
-		f, err = getFile(args, &t)
-		if err != nil {
+		if err := writeEachFile(args, t); err != nil {
 			return err
-		}
-
-		// should only be nil when type == xo
-		if f == nil {
-			continue
-		}
-
-		// write segment
-		if !args.Append || (t.TemplateType != internal.TypeTemplate && t.TemplateType != internal.QueryTypeTemplate) {
-			_, err = t.Buf.WriteTo(f)
-			if err != nil {
-				return err
-			}
 		}
 	}
 
 	// build goimports parameters, closing files
 	params := []string{"-w"}
-	for k, f := range files {
+	for k := range files {
 		params = append(params, k)
-
-		// close
-		err = f.Close()
-		if err != nil {
-			return err
-		}
 	}
 
 	// process written files with goimports
 	return exec.Command("goimports", params...).Run()
+}
+
+func writeEachFile(args *internal.ArgType, t internal.TBuf) error {
+	// skip when in append and type is XO
+	if args.Append && t.TemplateType == internal.XOTemplate {
+		return nil
+	}
+
+	// check if generated template is only whitespace/empty
+	bufStr := strings.TrimSpace(t.Buf.String())
+	if len(bufStr) == 0 {
+		return nil
+	}
+
+	// get file and filename
+	f, err := getFile(args, &t)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// should only be nil when type == xo
+	if f == nil {
+		return nil
+	}
+
+	// write segment
+	if !args.Append || (t.TemplateType != internal.TypeTemplate && t.TemplateType != internal.QueryTypeTemplate) {
+		if _, err = t.Buf.WriteTo(f); err != nil {
+			return err
+		}
+	}
+	return nil
 }
